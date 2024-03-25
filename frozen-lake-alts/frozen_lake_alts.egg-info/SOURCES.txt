@@ -1,0 +1,9 @@
+setup.py
+frozen_lake_alts/__init__.py
+frozen_lake_alts.egg-info/PKG-INFO
+frozen_lake_alts.egg-info/SOURCES.txt
+frozen_lake_alts.egg-info/dependency_links.txt
+frozen_lake_alts.egg-info/requires.txt
+frozen_lake_alts.egg-info/top_level.txt
+frozen_lake_alts/envs/__init__.py
+frozen_lake_alts/envs/alt_reward.py

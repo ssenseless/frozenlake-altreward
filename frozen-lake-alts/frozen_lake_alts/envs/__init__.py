@@ -1,0 +1,1 @@
+from frozen_lake_alts.envs.alt_reward import FrozenLakeAltRewardEnv
