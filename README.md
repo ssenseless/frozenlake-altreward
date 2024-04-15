@@ -1,1 +1,1 @@
-will update later
+works best with python <= v.3.8. can work with v3.8+ but requires some hacky --pre installs with pygame at time of writing

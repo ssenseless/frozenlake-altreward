@@ -1,67 +1,95 @@
+# ---------------------------------------------------------IMPORTS------------------------------------------------------
 import frozen_lake_alts
 import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn
 import gym
+
 from typing import NamedTuple
 from pathlib import Path
 from tqdm import tqdm
 from frozen_lake_alts.envs.alt_reward import generate_random_map, generate_random_map_any_start
 
 
+# ---------------------------------------------------------CLASSES------------------------------------------------------
 class Params(NamedTuple):
-    episodes: int  # Total episodes
-    alpha_: float  # Learning rate
-    gamma_: float  # Discounting rate
-    epsilon_: float  # Exploration probability
-    size: int  # Number of tiles of one side of the squared environment
-    seed: int  # Define a seed so that we get reproducible result
-    actions: int  # Number of possible actions
-    states: int  # Number of possible states
-    p: float  # Probability that a tile is frozen
-    runs: int
+    episodes: int  # episodes per run
+    alpha_: float
+    gamma_: float
+    epsilon_: float
+    size: int  # amount of tiles s.t. the square board is [size X size]
+    seed: int  # reproducible rng
+    actions: int
+    states: int
+    p: float  # tile freezing probability for map generation
+    runs: int  # total number of runs (stochasticity)
     start: str
     generator: list
-    savefig_folder: Path  # Root folder where plots are saved
+    path: Path
 
 
-class Q_Learning:
+class QLearning:
     def __init__(self, alpha_, gamma_, states, actions):
+        self.qtable = None
         self.states = states
         self.actions = actions
         self.alpha_ = alpha_
         self.gamma_ = gamma_
-        self.reset_qtable()
+        self.reset()
 
     def update(self, state, action, reward, new_state):
-        """Update Q(s,a):= Q(s,a) + lr [R(s,a) + gamma * max Q(s',a') - Q(s,a)]"""
-        delta_ = reward + self.gamma_ * np.max(self.qtable[new_state, :]) - self.qtable[state, action]
-        q_update = self.qtable[state, action] + (self.alpha_ * delta_)
+        """update the qtable using given states and actions according to the qlearning update model"""
+        q_update = \
+            (
+                    self.qtable[state, action]
+                    + (
+                            self.alpha_
+                            * (
+                                    reward
+                                    + self.gamma_
+                                    * np.max(self.qtable[new_state, :])
+                                    - self.qtable[state, action]
+                            )
+                    )
+            )
         return q_update
 
-    def reset_qtable(self):
-        """Reset the Q-table."""
+    def reset(self):
+        """resets the qtable values to zeroes"""
         self.qtable = np.zeros((self.states, self.actions))
 
 
 class SARSA:
     def __init__(self, alpha_, gamma_, states, actions):
+        self.qtable = None
         self.states = states
         self.actions = actions
         self.alpha_ = alpha_
         self.gamma_ = gamma_
-        self.reset_qtable()
+        self.reset()
 
     def update(self, state, action, reward, new_state, new_action):
-        """Update Q(s,a):= Q(s,a) + lr [R(s,a) + gamma * max Q(s',a') - Q(s,a)]"""
-        delta_ = reward + (self.gamma_ * self.qtable[new_state, new_action]) - self.qtable[state, action]
-
-        q_update = self.qtable[state, action] + (self.alpha_ * delta_)
+        """update the qtable using given states and actions according to the sarsa update model"""
+        q_update = \
+            (
+                    self.qtable[state, action]
+                    + (
+                            self.alpha_
+                            * (
+                                    reward
+                                    + (
+                                            self.gamma_
+                                            * self.qtable[new_state, new_action]
+                                    )
+                                    - self.qtable[state, action]
+                            )
+                    )
+            )
         return q_update
 
-    def reset_qtable(self):
-        """Reset the Q-table."""
+    def reset(self):
+        """resets the qtable values to zeroes"""
         self.qtable = np.zeros((self.states, self.actions))
 
 
@@ -69,19 +97,22 @@ class EpsilonGreedy:
     def __init__(self, epsilon_):
         self.epsilon_ = epsilon_
 
-    def choose_action(self, action_space, state, qtable):
+    def return_action(self, action_space, state, qtable):
+        """typical epsilon greedy, but with added convention to ensure random direction choices upon qtable ties"""
         if np.random.random() < self.epsilon_:
             action = action_space.sample()
 
         else:
-            if np.all(qtable[state, :]) == qtable[state, 0]:
-                action = action_space.sample()
+            if np.all(qtable[state, :]) == qtable[state, 0]:  # if all values in the state are the same
+                action = action_space.sample()  # randomly choose direction (don't just always choose left)
             else:
                 action = np.argmax(qtable[state, :])
         return action
 
 
+# ---------------------------------------------------------DEFS---------------------------------------------------------
 def run_env_q():
+    # init
     rewards = np.zeros((params.episodes, params.runs))
     steps = np.zeros((params.episodes, params.runs))
     episodes = np.arange(params.episodes)
@@ -90,46 +121,51 @@ def run_env_q():
     actions = []
 
     for run in range(params.runs):
-        agent_q.reset_qtable()  # Reset the Q-table between runs
+        agent_q.reset()  # zero out qtable each run (data is stored for postprocessing elsewhere)
         for episode in tqdm(episodes, leave=False):
-            state = env.reset(seed=params.seed)[0]  # Reset the environment
+            state = env.reset(seed=params.seed)[0]
             step = 0
             done = False
             total_rewards = 0
             step_penalty = 1
 
             while not done:
-                action = policy.choose_action(
+                action = policy.return_action(
                     action_space=env.action_space, state=state, qtable=agent_q.qtable
                 )
 
-                # Log all states and actions
+                # log state and action pairs
                 states.append(state)
                 actions.append(action)
 
-                # Take the action (a) and observe the outcome state(s') and reward (r)
+                # get data
                 new_state, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
-                agent_q.qtable[state, action] = agent_q.update(state, action, reward, new_state)
-                reward *= round(1 - (int(step / 100) / 5.0), 1)
+
+                # penalize agent
                 step_penalty -= 0.002
                 reward = round(reward * step_penalty, 3)
 
+                # update qtable
+                agent_q.qtable[state, action] = agent_q.update(state, action, reward, new_state)
+
+                # more data registration
                 total_rewards += reward
                 step += 1
-
-                # Our new state is state
                 state = new_state
 
-            # Log all rewards and steps
+            # save rewards and steps for this episode
             rewards[episode, run] = total_rewards
             steps[episode, run] = step
+
+        # save qtable for run before resetting for stochasticity
         qtables[run, :, :] = agent_q.qtable
 
     return rewards, steps, qtables, states, actions
 
 
 def run_env_sarsa():
+    # init
     rewards = np.zeros((params.episodes, params.runs))
     steps = np.zeros((params.episodes, params.runs))
     episodes = np.arange(params.episodes)
@@ -138,48 +174,60 @@ def run_env_sarsa():
     actions = []
 
     for run in range(params.runs):
-        agent_sarsa.reset_qtable()  # Reset the Q-table between runs
+        agent_sarsa.reset()  # zero out qtable each run (data is stored for postprocessing elsewhere)
         for episode in tqdm(episodes, leave=False):
-            state = env.reset(seed=params.seed)[0]  # Reset the environment
+            state = env.reset(seed=params.seed)[0]
             step = 0
             done = False
             total_rewards = 0
             step_penalty = 1
 
             while not done:
-                action = policy.choose_action(action_space=env.action_space, state=state, qtable=agent_sarsa.qtable)
+                action = policy.return_action(
+                    action_space=env.action_space,
+                    state=state,
+                    qtable=agent_sarsa.qtable
+                )
 
-                # Log all states and actions
+                # log state and action pairs
                 states.append(state)
                 actions.append(action)
 
-                # Take the action (a) and observe the outcome state(s') and reward (r)
+                # get data
                 new_state, reward, terminated, truncated, info = env.step(action)
                 done = terminated or truncated
-                new_action = policy.choose_action(action_space=env.action_space, state=new_state, qtable=agent_sarsa.qtable)
+                new_action = policy.return_action(
+                    action_space=env.action_space,
+                    state=new_state,
+                    qtable=agent_sarsa.qtable
+                )
+
+                # penalize agent
                 step_penalty -= 0.002
                 reward = round(reward * step_penalty, 3)
 
+                # update qtable
                 agent_sarsa.qtable[state, action] = agent_sarsa.update(
                     state, action, reward, new_state, new_action
                 )
 
+                # more data registration
                 total_rewards += reward
                 step += 1
-
-                # Our new state is state
                 state = new_state
 
-            # Log all rewards and steps
+            # save rewards and steps for this episode
             rewards[episode, run] = total_rewards
             steps[episode, run] = step
+
+        # save qtable for run before resetting for stochasticity
         qtables[run, :, :] = agent_sarsa.qtable
 
     return rewards, steps, qtables, states, actions
 
 
 def postprocess(episodes, rewards, steps, map_size):
-    """Convert the results of the simulation in dataframes."""
+    """abstract simulated results into a format suitable for processing/visualizing"""
     cumulative_reward = pd.DataFrame(
         data={
             "Episodes": np.tile(episodes, reps=params.runs),
@@ -196,12 +244,12 @@ def postprocess(episodes, rewards, steps, map_size):
 
 
 def qtable_dir_map(qtable, map_size):
-    """Get the best learned action & map it to arrows."""
+    """arrow mapping """
     qtable_val_max = qtable.max(axis=1).reshape(map_size, map_size)
     qtable_best_action = np.argmax(qtable, axis=1).reshape(map_size, map_size)
     directions = {0: "←", 1: "↓", 2: "→", 3: "↑"}
     qtable_directions = np.empty(qtable_best_action.flatten().shape, dtype=str)
-    eps = np.finfo(float).eps  # Minimum float number on the machine
+    eps = np.finfo(float).eps
     for idx, val in enumerate(qtable_best_action.flatten()):
         if qtable_val_max.flatten()[idx] > eps:
             # Assign an arrow only if a minimal Q-value has been learned as best action
@@ -218,7 +266,6 @@ def plot_q_arrows(qtable_q, qtable_sarsa, map_size):
 
     fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(32, 12))
 
-    # Q-learning arrows
     seaborn.heatmap(
         qtable_q_maxval,
         annot=qtable_q_dir,
@@ -255,13 +302,14 @@ def plot_q_arrows(qtable_q, qtable_sarsa, map_size):
         spine.set_color("black")
 
     # save figure
-    img_title = f"arrowmap_{map_size}x{map_size}.png"
-    fig.savefig(params.savefig_folder / img_title, bbox_inches="tight")
+    img_title = f"arrowmap_def_{map_size}x{map_size}.png"
+    fig.savefig(params.path / img_title, bbox_inches="tight")
+
     plt.show()
 
 
 def plot_actions_hist(actions_q, actions_sarsa, map_size):
-    """Plot the distributions of states and actions."""
+    """state-action distribution histogram"""
     labels = {"LEFT": 0, "DOWN": 1, "RIGHT": 2, "UP": 3}
 
     fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(15, 5))
@@ -277,21 +325,43 @@ def plot_actions_hist(actions_q, actions_sarsa, map_size):
     fig.tight_layout()
 
     # save figure
-    img_title = f"actionshist_{map_size}x{map_size}.png"
-    fig.savefig(params.savefig_folder / img_title, bbox_inches="tight")
+    img_title = f"actionshist_def_{map_size}x{map_size}.png"
+    fig.savefig(params.path / img_title, bbox_inches="tight")
+
     plt.show()
 
 
-def plot_steps_and_rewards(rewards_df, steps_df, title=None):
-    """Plot the steps and rewards from dataframes."""
-    fig, ax = plt.subplots(nrows=1, ncols=2, figsize=(15, 5))
-    seaborn.lineplot(
-        data=rewards_df, x="Episodes", y="cum_rewards", hue="map_size", ax=ax[0]
-    )
-    ax[0].set(ylabel="Cumulated rewards")
+def plot_steps_and_rewards(rewards_df, steps_df, title=None, palette="tab10"):
+    labels = steps_df.map_size.unique()
+    colors = seaborn.color_palette(palette=palette)
 
-    seaborn.lineplot(data=steps_df, x="Episodes", y="Steps", hue="map_size", ax=ax[1])
-    ax[1].set(ylabel="Averaged steps number")
+    new_palette = dict((labels[n], colors[n]) for n in range(len(labels)))
+
+    fig = plt.figure(layout='constrained', figsize=(15, 5))
+    subfigs = fig.subfigures(nrows=1, ncols=2, wspace=0.05)
+
+    left_ax = subfigs[0].subplots(nrows=1, ncols=1)
+    seaborn.lineplot(
+        data=rewards_df, x="Episodes", y="cum_rewards", hue="map_size", ax=left_ax, palette=new_palette
+    )
+    subfigs[0].suptitle("Cumulated rewards")
+
+    right_ax = subfigs[1].subplots(nrows=2, ncols=2)
+    for count in range(4):
+        df = steps_df[steps_df["map_size"] == labels[count]]
+        if count >= 4:
+            break
+
+        seaborn.lineplot(
+            data=df,
+            x="Episodes",
+            y="Steps",
+            hue="map_size",
+            ax=right_ax[int(count / 2)][count % 2],
+            palette=new_palette
+        )
+        right_ax[int(count / 2)][count % 2].legend(title="map size")
+    subfigs[1].suptitle("Averaged steps number")
 
     img_title = "default.png"
 
@@ -299,17 +369,16 @@ def plot_steps_and_rewards(rewards_df, steps_df, title=None):
         fig.suptitle(title)
         img_title = f"{title}.png"
 
-    for axi in ax:
-        axi.legend(title="map size")
-    fig.tight_layout()
-    fig.subplots_adjust(top=0.88)
+    fig.savefig(params.path / img_title, bbox_inches="tight")
 
-    fig.savefig(params.savefig_folder / img_title, bbox_inches="tight")
     plt.show()
 
 
+# ---------------------------------------------------------PROGRAM------------------------------------------------------
 seaborn.set_theme()
 
+# set general parameters
+# (see ./frozen-lake-alts/frozen_lake_alts/envs/alt_reward.py for explicit declarations of p, start, and generator)
 params = Params(
     episodes=20000,
     alpha_=0.8,
@@ -320,38 +389,39 @@ params = Params(
     actions=None,
     states=None,
     p=0.85,
-    runs=5,
+    runs=10,
     start="random",
     generator=[generate_random_map_any_start],
-    savefig_folder=Path("./training_data/img"),
+    path=Path("./training_data/img"),
 )
 
-# create img folder
-params.savefig_folder.mkdir(parents=True, exist_ok=True)
+# create img folder if not exists
+params.path.mkdir(parents=True, exist_ok=True)
 
+# dataframes for both types of learning
 res_all_q = pd.DataFrame()
 res_all_sarsa = pd.DataFrame()
 st_all_q = pd.DataFrame()
 st_all_sarsa = pd.DataFrame()
 
+# map sizes
 sizes = [9, 11, 15, 25]
 for size in sizes:
     env = gym.make(
         "FrozenLakeAltReward",
-        render_mode=None,
-        size=size,
-        p=params.p,
-        seed=params.seed,
-        start=params.start
+        is_slippery=False,
+        desc=generate_random_map(size, params.p)
     )
 
+    # prepare global parameter usage
     params = params._replace(actions=env.action_space.n)
     params = params._replace(states=env.observation_space.n)
     params = params._replace(size=size)
 
     env.action_space.seed(params.seed)
 
-    agent_q = Q_Learning(
+    # initialize learning agents
+    agent_q = QLearning(
         alpha_=params.alpha_,
         gamma_=params.gamma_,
         states=params.states,
@@ -367,9 +437,11 @@ for size in sizes:
         epsilon_=params.epsilon_
     )
 
+    # run both environments
     rewards_q, steps_q, qtables_q, states_q, actions_q = run_env_q()
     rewards_sarsa, steps_sarsa, qtables_sarsa, states_sarsa, actions_sarsa = run_env_sarsa()
 
+    # postprocessing for both environments to prepare for data visualization
     res, st = postprocess(np.arange(params.episodes), rewards_q, steps_q, size)
     res_all_q = pd.concat([res_all_q, res])
     st_all_q = pd.concat([st_all_q, st])
@@ -380,10 +452,12 @@ for size in sizes:
     st_all_sarsa = pd.concat([st_all_sarsa, st_sarsa])
     qtable_sarsa = qtables_sarsa.mean(axis=0)
 
+    # data visualization
     plot_actions_hist(actions_q, actions_sarsa, size)
     plot_q_arrows(qtable_q, qtable_sarsa, size)
 
     env.close()
 
-plot_steps_and_rewards(res_all_q, st_all_q, "Q-Learning Rewards and Steps")
-plot_steps_and_rewards(res_all_sarsa, st_all_sarsa, "SARSA Rewards and Steps")
+# more data visualization
+plot_steps_and_rewards(res_all_q, st_all_q, "Q-Learning Rewards and Steps Default", 'rocket_r')
+plot_steps_and_rewards(res_all_sarsa, st_all_sarsa, "SARSA Rewards and Steps Default", 'mako_r')
